@@ -38,6 +38,8 @@ $restaurantAddress = setting('restaurant_address');
         .footer { text-align: center; margin-top: 15px; font-size: 10px; }
         .qr-placeholder { text-align: center; margin: 10px 0; }
         @media print { body { padding: 0; } .ticket { border: none; max-width: 100%; } .no-print { display: none !important; } }
+        .table-banner { text-align: center; font-size: 26px; font-weight: bold; border: 3px solid #000; padding: 6px; margin: 8px 0; letter-spacing: 2px; }
+        .qr-code { display: flex; justify-content: center; margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -52,7 +54,10 @@ $restaurantAddress = setting('restaurant_address');
         <div class="subtitle"><?= e($restaurantPhone) ?> | <?= e($restaurantAddress) ?></div>
     </div>
     <div class="info"><span class="label">Order #:</span><span><?= e($order['order_number']) ?></span></div>
-    <div class="info"><span class="label">Type:</span><span><?= e(ucfirst($order['order_type'])) ?></span></div>
+    <?php if ($order['order_type'] === 'dine_in' && $order['table_number']): ?>
+    <div class="table-banner">TABLE <?= e($order['table_number']) ?></div>
+    <?php endif; ?>
+    <div class="info"><span class="label">Type:</span><span><?= e(order_type_label($order)) ?></span></div>
     <div class="info"><span class="label">Status:</span><span><?= e(ucwords(str_replace('_', ' ', $order['status']))) ?></span></div>
     <div class="info"><span class="label">Time:</span><span><?= date('d M Y H:i', strtotime($order['created_at'])) ?></span></div>
     <?php if ($order['table_number']): ?>
@@ -76,12 +81,23 @@ $restaurantAddress = setting('restaurant_address');
     <div class="footer">
         <div>Items: <?= count($items) ?> | Total Qty: <?= array_sum(array_column($items, 'quantity')) ?></div>
         <div>Printed: <?= date('d M Y H:i:s') ?></div>
-        <div class="qr-placeholder">[ QR CODE: ORDER <?= e($order['order_number']) ?> ]</div>
+        <div class="qr-code" id="ticket-qr" data-url="<?= e(public_url('index.php?page=track&id=' . $order['id'])) ?>"></div>
+        <div>ORDER <?= e($order['order_number']) ?></div>
         <div style="margin-top:10px;">--- CUT HERE ---</div>
     </div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>
-    window.onload = function() { window.print(); };
+    window.onload = function() {
+        var box = document.getElementById('ticket-qr');
+        if (window.qrcode && box) {
+            var qr = qrcode(0, 'M');
+            qr.addData(box.dataset.url);
+            qr.make();
+            box.innerHTML = qr.createSvgTag(3, 2);
+        }
+        window.print();
+    };
 </script>
 </body>
 </html>

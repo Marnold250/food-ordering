@@ -110,18 +110,31 @@ try {
             redirect('index.php?page=cart');
 
         case 'place_order':
-            require_login('customer');
+            $table = dine_in_table();
+            if ($table && logged_in() && !has_role('customer')) {
+                throw new RuntimeException('Staff accounts cannot place table orders. Please sign out first.');
+            }
+            if (!$table) {
+                require_login('customer');
+            }
             if (!cart()) {
                 throw new RuntimeException('Your cart is empty.');
             }
             $name = trim((string) ($_POST['name'] ?? ''));
             $phone = preg_replace('/\D+/', '', (string) ($_POST['phone'] ?? ''));
-            $orderType = in_array($_POST['order_type'] ?? '', ['delivery', 'pickup'], true) ? $_POST['order_type'] : 'delivery';
-            $payment = in_array($_POST['payment_method'] ?? '', ['cod', 'card', 'upi'], true) ? $_POST['payment_method'] : 'cod';
+            $orderType = $table ? 'dine_in' : (in_array($_POST['order_type'] ?? '', ['delivery', 'pickup'], true) ? $_POST['order_type'] : 'delivery');
+            $payment = in_array($_POST['payment_method'] ?? '', ['cod', 'card', 'upi', 'cash'], true) ? $_POST['payment_method'] : 'cod';
+            if ($orderType === 'dine_in' && $payment === 'cod') {
+                $payment = 'cash';
+            }
+            $email = logged_in() ? (string) user()['email'] : strtolower(trim((string) ($_POST['email'] ?? '')));
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                throw new RuntimeException('Enter a valid email address or leave it empty.');
+            }
             
             // Get delivery address - either from textarea or saved address
             $address = trim((string) ($_POST['address'] ?? ''));
-            if ($address === '' && isset($_POST['address_id'])) {
+            if ($address === '' && isset($_POST['address_id']) && logged_in()) {
                 $savedAddress = query('SELECT address_line, city, pincode FROM addresses WHERE id=? AND user_id=?', [(int)$_POST['address_id'], user()['id']])->fetch();
                 if ($savedAddress) {
                     $address = $savedAddress['address_line'] . ', ' . $savedAddress['city'] . ' - ' . $savedAddress['pincode'];
@@ -146,11 +159,18 @@ try {
             }
             $number = order_number();
             db()->beginTransaction();
-            query('INSERT INTO orders (order_number,user_id,branch_id,customer_name,customer_email,customer_phone,delivery_address,order_type,subtotal,discount,delivery_fee,tax,total,coupon_code,payment_method,payment_status,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
-                $number, user()['id'], 1, $name, user()['email'], $phone, $orderType === 'pickup' ? setting('restaurant_address') : $address,
-                $orderType, $totals['subtotal'], $totals['discount'], $orderType === 'pickup' ? 0 : $totals['delivery'],
-                $totals['tax'], $orderType === 'pickup' ? $totals['total'] - $totals['delivery'] : $totals['total'],
-                $_SESSION['coupon'] ?? null, $payment, $payment === 'cod' ? 'pending' : 'paid', trim((string) ($_POST['notes'] ?? '')),
+            $deliveryFee = $orderType === 'delivery' ? $totals['delivery'] : 0;
+            $orderAddress = match ($orderType) {
+                'dine_in' => 'Dine-in · Table ' . $table['number'],
+                'pickup' => setting('restaurant_address'),
+                default => $address,
+            };
+            query('INSERT INTO orders (order_number,user_id,branch_id,customer_name,customer_email,customer_phone,delivery_address,order_type,table_number,subtotal,discount,delivery_fee,tax,total,coupon_code,payment_method,payment_status,notes,estimated_minutes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+                $number, logged_in() ? user()['id'] : null, $table['branch_id'] ?? 1, $name, $email !== '' ? $email : null, $phone, $orderAddress,
+                $orderType, $table['number'] ?? null, $totals['subtotal'], $totals['discount'], $deliveryFee,
+                $totals['tax'], $totals['total'] - $totals['delivery'] + $deliveryFee,
+                $_SESSION['coupon'] ?? null, $payment, 'pending', trim((string) ($_POST['notes'] ?? '')),
+                $orderType === 'delivery' ? 35 : 20,
             ]);
             $orderId = (int) db()->lastInsertId();
             foreach (cart() as $item) {
@@ -165,9 +185,19 @@ try {
             if (!empty($_SESSION['coupon'])) {
                 query('UPDATE coupons SET used_count = used_count + 1 WHERE code = ?', [$_SESSION['coupon']]);
             }
-            query('INSERT INTO notifications (user_id,title,message,icon) VALUES (?,?,?,?)', [
-                user()['id'], 'Order received', "We received order {$number} and will confirm it shortly.", 'bi-bag-check',
-            ]);
+            if (logged_in()) {
+                query('INSERT INTO notifications (user_id,title,message,icon) VALUES (?,?,?,?)', [
+                    user()['id'], 'Order received', "We received order {$number} and will confirm it shortly.", 'bi-bag-check',
+                ]);
+            }
+            if ($orderType === 'dine_in') {
+                query('UPDATE restaurant_tables SET status="occupied" WHERE table_number=?', [$table['number']]);
+                foreach (query('SELECT id FROM users WHERE role IN ("admin","staff","kitchen") AND status="active"')->fetchAll() as $teamMember) {
+                    query('INSERT INTO notifications (user_id,title,message,icon) VALUES (?,?,?,?)', [
+                        $teamMember['id'], 'New table order', "Table {$table['number']} placed order {$number}.", 'bi-qr-code',
+                    ]);
+                }
+            }
             // Check for low stock and notify admins
             $threshold = (int) setting('low_stock_threshold', '10');
             $lowStockItems = query('SELECT name, stock FROM menu_items WHERE stock <= ? AND status = 1', [$threshold])->fetchAll();
@@ -181,6 +211,10 @@ try {
             db()->commit();
             $_SESSION['cart'] = [];
             unset($_SESSION['discount'], $_SESSION['coupon']);
+            if (!logged_in()) {
+                $_SESSION['guest_orders'][] = $orderId;
+            }
+            send_order_confirmation(query('SELECT * FROM orders WHERE id=?', [$orderId])->fetch());
             redirect('index.php?page=order-success&id=' . $orderId);
 
         case 'submit_review':
@@ -262,23 +296,29 @@ try {
             $status = (string) ($_POST['status'] ?? '');
             $allowed = [
                 'admin' => ['pending','confirmed','preparing','ready','out_for_delivery','delivered','cancelled'],
-                'staff' => ['confirmed','cancelled'],
+                'staff' => ['confirmed','cancelled','delivered'],
                 'kitchen' => ['confirmed','preparing','ready'],
                 'delivery' => ['ready','out_for_delivery','delivered'],
             ];
             if (!in_array($status, $allowed[user()['role']] ?? [], true)) {
                 throw new RuntimeException('That status change is not permitted.');
             }
-            $order = query('SELECT user_id,order_number,status,delivery_user_id FROM orders WHERE id=?', [$orderId])->fetch();
+            $order = query('SELECT * FROM orders WHERE id=?', [$orderId])->fetch();
             if (!$order) {
                 throw new RuntimeException('Order not found.');
             }
             $role = user()['role'];
             $transitions = [
-                'staff' => ['pending' => ['confirmed','cancelled'], 'confirmed' => ['cancelled']],
+                'staff' => ['pending' => ['confirmed','cancelled'], 'confirmed' => ['cancelled'], 'ready' => ['delivered']],
                 'kitchen' => ['confirmed' => ['preparing'], 'preparing' => ['ready']],
                 'delivery' => ['ready' => ['out_for_delivery'], 'out_for_delivery' => ['delivered']],
             ];
+            if ($role === 'staff' && $status === 'delivered' && $order['order_type'] === 'delivery') {
+                throw new RuntimeException('Delivery orders are completed by the delivery partner.');
+            }
+            if ($role === 'delivery' && $order['order_type'] !== 'delivery') {
+                throw new RuntimeException('Only delivery orders can be handled by delivery partners.');
+            }
             if ($role !== 'admin' && !in_array($status, $transitions[$role][$order['status']] ?? [], true)) {
                 throw new RuntimeException('That order cannot move from ' . str_replace('_', ' ', $order['status']) . ' to ' . str_replace('_', ' ', $status) . '.');
             }
@@ -286,16 +326,29 @@ try {
                 if ($order['delivery_user_id'] && (int) $order['delivery_user_id'] !== (int) user()['id']) {
                     throw new RuntimeException('This delivery is assigned to another rider.');
                 }
-                query('UPDATE orders SET status=?,delivery_user_id=?,payment_status=IF(?="delivered" AND payment_method="cod","paid",payment_status) WHERE id=?', [$status,user()['id'],$status,$orderId]);
+                query('UPDATE orders SET status=?,delivery_user_id=?,payment_status=IF(?="delivered" AND payment_method IN ("cod","cash"),"paid",payment_status) WHERE id=?', [$status,user()['id'],$status,$orderId]);
             } else {
-                query('UPDATE orders SET status=?,payment_status=IF(?="delivered" AND payment_method="cod","paid",payment_status) WHERE id=?', [$status,$status,$orderId]);
+                query('UPDATE orders SET status=?,payment_status=IF(?="delivered" AND payment_method IN ("cod","cash"),"paid",payment_status) WHERE id=?', [$status,$status,$orderId]);
             }
             if ($order && $order['user_id']) {
                 query('INSERT INTO notifications (user_id,title,message,icon) VALUES (?,?,?,?)', [
                     $order['user_id'], 'Order update', 'Order ' . $order['order_number'] . ' is now ' . str_replace('_', ' ', $status) . '.', 'bi-arrow-repeat',
                 ]);
             }
+            if (in_array($status, ['delivered', 'cancelled'], true)) {
+                release_table_if_idle($order['table_number']);
+            }
+            if ($status !== $order['status']) {
+                send_order_status_update($order, $order['status'], $status);
+            }
             flash('success', 'Order status updated.');
+            redirect($back);
+
+        case 'mark_paid':
+            require_login(['admin', 'staff']);
+            $orderId = (int) ($_POST['order_id'] ?? 0);
+            query('UPDATE orders SET payment_status="paid" WHERE id=? AND payment_status="pending" AND status!="cancelled"', [$orderId]);
+            flash('success', 'Payment marked as received.');
             redirect($back);
 
         case 'save_item':
@@ -573,18 +626,17 @@ try {
             $branchId = (int) ($_POST['branch_id'] ?? 0) ?: null;
             $capacity = max(1, min(20, (int) ($_POST['capacity'] ?? 4)));
             $status = in_array($_POST['status'] ?? '', ['free','occupied','reserved','maintenance'], true) ? $_POST['status'] : 'free';
-            $qrCode = trim((string) ($_POST['qr_code'] ?? ''));
-            if ($tableNumber === '') {
-                throw new RuntimeException('Table number is required.');
+            if (!preg_match('/^[A-Z0-9_-]{1,20}$/', $tableNumber)) {
+                throw new RuntimeException('Table number can only use letters, numbers, - and _ (max 20).');
             }
             if (query('SELECT id FROM restaurant_tables WHERE table_number=? AND id!=?', [$tableNumber, $id])->fetch()) {
                 throw new RuntimeException('That table number already exists.');
             }
             if ($id) {
-                query('UPDATE restaurant_tables SET table_number=?,branch_id=?,capacity=?,status=?,qr_code=? WHERE id=?', [$tableNumber,$branchId,$capacity,$status,$qrCode,$id]);
+                query('UPDATE restaurant_tables SET table_number=?,branch_id=?,capacity=?,status=? WHERE id=?', [$tableNumber,$branchId,$capacity,$status,$id]);
                 flash('success', 'Table updated.');
             } else {
-                query('INSERT INTO restaurant_tables (table_number,branch_id,capacity,status,qr_code) VALUES (?,?,?,?,?)', [$tableNumber,$branchId,$capacity,$status,$qrCode]);
+                query('INSERT INTO restaurant_tables (table_number,branch_id,capacity,status) VALUES (?,?,?,?)', [$tableNumber,$branchId,$capacity,$status]);
                 flash('success', 'Table added.');
             }
             redirect('dashboard.php?page=tables');
@@ -684,7 +736,7 @@ try {
         case 'cancel_order':
             require_login('customer');
             $orderId = (int) ($_POST['order_id'] ?? 0);
-            $order = query('SELECT id, user_id, status, order_number FROM orders WHERE id=? AND user_id=?', [$orderId, user()['id']])->fetch();
+            $order = query('SELECT id, user_id, status, order_number, table_number FROM orders WHERE id=? AND user_id=?', [$orderId, user()['id']])->fetch();
             if (!$order) {
                 throw new RuntimeException('Order not found.');
             }
@@ -692,6 +744,7 @@ try {
                 throw new RuntimeException('Order cannot be cancelled at this stage.');
             }
             query('UPDATE orders SET status="cancelled" WHERE id=?', [$orderId]);
+            release_table_if_idle($order['table_number']);
             // Restore stock
             $orderItems = query('SELECT menu_item_id, quantity FROM order_items WHERE order_id=?', [$orderId])->fetchAll();
             foreach ($orderItems as $item) {

@@ -2,6 +2,10 @@ CREATE DATABASE IF NOT EXISTS food_ordering CHARACTER SET utf8mb4 COLLATE utf8mb
 USE food_ordering;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS contact_messages;
+DROP TABLE IF EXISTS email_queue;
+DROP TABLE IF EXISTS password_resets;
+DROP TABLE IF EXISTS restaurant_tables;
 DROP TABLE IF EXISTS activity_logs;
 DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS review_helpful;
@@ -13,6 +17,7 @@ DROP TABLE IF EXISTS coupons;
 DROP TABLE IF EXISTS menu_items;
 DROP TABLE IF EXISTS categories;
 DROP TABLE IF EXISTS addresses;
+DROP TABLE IF EXISTS branches;
 DROP TABLE IF EXISTS users;
 DROP TABLE IF EXISTS settings;
 SET FOREIGN_KEY_CHECKS = 1;
@@ -84,6 +89,29 @@ CREATE TABLE coupons (
     usage_limit INT NOT NULL DEFAULT 100,
     used_count INT NOT NULL DEFAULT 0,
     status TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE=InnoDB;
+
+CREATE TABLE branches (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    address VARCHAR(300) NOT NULL,
+    phone VARCHAR(20) DEFAULT NULL,
+    email VARCHAR(160) DEFAULT NULL,
+    manager_id INT UNSIGNED DEFAULT NULL,
+    status TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_branch_manager FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE restaurant_tables (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    table_number VARCHAR(20) NOT NULL UNIQUE,
+    capacity INT UNSIGNED NOT NULL DEFAULT 4,
+    status ENUM('free','occupied','reserved','maintenance') NOT NULL DEFAULT 'free',
+    qr_code VARCHAR(500) DEFAULT NULL,
+    branch_id INT UNSIGNED DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_table_branch FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE orders (
@@ -183,29 +211,6 @@ CREATE TABLE activity_logs (
     ip_address VARCHAR(45) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_log_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
-
-CREATE TABLE restaurant_tables (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    table_number VARCHAR(20) NOT NULL UNIQUE,
-    capacity INT UNSIGNED NOT NULL DEFAULT 4,
-    status ENUM('free','occupied','reserved','maintenance') NOT NULL DEFAULT 'free',
-    qr_code VARCHAR(500) DEFAULT NULL,
-    branch_id INT UNSIGNED DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_table_branch FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
-
-CREATE TABLE branches (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    address VARCHAR(300) NOT NULL,
-    phone VARCHAR(20) DEFAULT NULL,
-    email VARCHAR(160) DEFAULT NULL,
-    manager_id INT UNSIGNED DEFAULT NULL,
-    status TINYINT(1) NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_branch_manager FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE password_resets (

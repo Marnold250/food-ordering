@@ -16,10 +16,28 @@ if (is_file($envPath)) {
     }
 }
 
-$secure = (bool) ($_ENV['SESSION_SECURE'] ?? false);
-$httponly = (bool) ($_ENV['SESSION_HTTPONLY'] ?? true);
-$samesite = $_ENV['SESSION_SAMESITE'] ?? 'lax';
-$lifetime = (int) ($_ENV['SESSION_LIFETIME'] ?? 7200);
+function env(string $key, string $default = ''): string
+{
+    if (array_key_exists($key, $_ENV)) {
+        return (string) $_ENV[$key];
+    }
+    $value = getenv($key);
+    return $value === false ? $default : $value;
+}
+
+function env_bool(string $key, bool $default = false): bool
+{
+    $value = env($key);
+    if ($value === '') {
+        return $default;
+    }
+    return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $default;
+}
+
+$secure = env_bool('SESSION_SECURE', false);
+$httponly = env_bool('SESSION_HTTPONLY', true);
+$samesite = env('SESSION_SAMESITE', 'lax');
+$lifetime = (int) env('SESSION_LIFETIME', '7200');
 
 session_set_cookie_params([
     'lifetime' => $lifetime,
@@ -31,16 +49,12 @@ session_set_cookie_params([
 ]);
 session_start();
 
-const APP_NAME = 'Cafe';
-const DB_HOST = '127.0.0.1';
-const DB_NAME = 'food_ordering';
-const DB_USER = 'root';
-const DB_PASS = 'mahoro@250';
-
-function env(string $key, string $default = ''): string
-{
-    return $_ENV[$key] ?? getenv($key) ?? $default;
-}
+define('APP_NAME', env('APP_NAME', 'Cafe'));
+define('DB_HOST', env('DB_HOST', '127.0.0.1'));
+define('DB_PORT', env('DB_PORT', '3306'));
+define('DB_NAME', env('DB_NAME', 'food_ordering'));
+define('DB_USER', env('DB_USER', 'root'));
+define('DB_PASS', env('DB_PASS', ''));
 
 function db(): PDO
 {
@@ -51,7 +65,7 @@ function db(): PDO
 
     try {
         $pdo = new PDO(
-            'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4',
+            'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4',
             DB_USER,
             DB_PASS,
             [
@@ -65,8 +79,8 @@ function db(): PDO
         exit(
             '<div style="font-family:Arial;max-width:680px;margin:60px auto;padding:28px;border:1px solid #fecaca;border-radius:16px">'
             . '<h2 style="color:#dc2626">Database connection failed</h2>'
-            . '<p>Start Apache and MySQL in XAMPP, then import <code>database/food_ordering.sql</code> in phpMyAdmin.</p>'
-            . '<small>' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8') . '</small></div>'
+            . '<p>Start Apache and MySQL in XAMPP, import <code>database/food_ordering.sql</code> in phpMyAdmin and check the DB_* values in <code>.env</code>.</p>'
+            . (env_bool('APP_DEBUG') ? '<small>' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8') . '</small>' : '') . '</div>'
         );
     }
 

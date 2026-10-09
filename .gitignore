@@ -1,0 +1,10 @@
+# Local secrets
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# User uploads (keep the folder)
+uploads/menu/*
+!uploads/menu/.gitkeep

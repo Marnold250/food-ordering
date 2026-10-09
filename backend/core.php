@@ -129,7 +129,7 @@ function cart_totals(): array
             unset($_SESSION['coupon'], $_SESSION['discount']);
         }
     }
-    $delivery = $subtotal >= (float) setting('free_delivery_threshold', '499') || $subtotal === 0.0 ? 0.0 : (float) setting('delivery_fee', '49');
+    $delivery = dine_in_table() || $subtotal >= (float) setting('free_delivery_threshold', '499') || $subtotal === 0.0 ? 0.0 : (float) setting('delivery_fee', '49');
     $tax = round(($subtotal - $discount) * ((float) setting('tax_rate', '5') / 100), 2);
     return compact('subtotal', 'discount', 'delivery', 'tax') + [
         'total' => max(0, $subtotal - $discount + $delivery + $tax),
@@ -187,6 +187,54 @@ function store_uploaded_image(array $file, string $existing = ''): string
     return 'uploads/menu/' . $name;
 }
 
+function public_url(string $path = ''): string
+{
+    $appUrl = rtrim(env('APP_URL'), '/');
+    if ($appUrl === '') {
+        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['SERVER_PORT'] ?? '') === '443');
+        $appUrl = ($https ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'localhost') . rtrim(base_url(), '/');
+    }
+    return $appUrl . '/' . ltrim($path, '/');
+}
+
+function table_order_url(string $tableNumber): string
+{
+    return public_url('index.php?table=' . rawurlencode($tableNumber));
+}
+
+function dine_in_table(): ?array
+{
+    return $_SESSION['dine_in_table'] ?? null;
+}
+
+function order_type_label(array $order): string
+{
+    return match ($order['order_type']) {
+        'dine_in' => 'Dine-in' . (!empty($order['table_number']) ? ' · Table ' . $order['table_number'] : ''),
+        'pickup' => 'Pickup',
+        default => 'Delivery',
+    };
+}
+
+function can_view_order(array $order): bool
+{
+    if (has_role('customer') && (int) $order['user_id'] === (int) user()['id']) {
+        return true;
+    }
+    return in_array((int) $order['id'], $_SESSION['guest_orders'] ?? [], true);
+}
+
+function release_table_if_idle(?string $tableNumber): void
+{
+    if (!$tableNumber) {
+        return;
+    }
+    $open = (int) query('SELECT COUNT(*) FROM orders WHERE table_number=? AND order_type="dine_in" AND status NOT IN ("delivered","cancelled")', [$tableNumber])->fetchColumn();
+    if ($open === 0) {
+        query('UPDATE restaurant_tables SET status="free" WHERE table_number=? AND status="occupied"', [$tableNumber]);
+    }
+}
+
 function page_title(string $title = ''): string
 {
     return $title ? $title . ' · ' . APP_NAME : APP_NAME . ' · Flavours delivered fast';
@@ -195,7 +243,7 @@ function page_title(string $title = ''): string
 function mail_send(string $to, string $subject, string $htmlBody, string $textBody = ''): bool
 {
     $host = env('MAIL_HOST');
-    $port = (int) env('MAIL_PORT', 587);
+    $port = (int) env('MAIL_PORT', '587');
     $username = env('MAIL_USERNAME');
     $password = env('MAIL_PASSWORD');
     $encryption = env('MAIL_ENCRYPTION', 'tls');
@@ -207,12 +255,17 @@ function mail_send(string $to, string $subject, string $htmlBody, string $textBo
         return false;
     }
 
+    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+
     $headers = [
         'MIME-Version: 1.0',
-        'Content-Type: text/html; charset=UTF-8',
+        'Date: ' . date('r'),
         'From: ' . $fromName . ' <' . $fromAddress . '>',
+        'To: <' . $to . '>',
+        'Subject: =?UTF-8?B?' . base64_encode($subject) . '?=',
         'Reply-To: ' . $fromAddress,
-        'X-Mailer: PHP/' . PHP_VERSION,
     ];
 
     if ($textBody) {
@@ -225,8 +278,10 @@ function mail_send(string $to, string $subject, string $htmlBody, string $textBo
         $message .= $htmlBody . "\r\n";
         $message .= "--__BOUNDARY__--";
     } else {
+        $headers[] = 'Content-Type: text/html; charset=UTF-8';
         $message = $htmlBody;
     }
+    $message = preg_replace('/^\./m', '..', str_replace(["\r\n", "\n"], ["\n", "\r\n"], $message));
 
     $smtp = @fsockopen(($encryption === 'ssl' ? 'ssl://' : '') . $host, $port, $errno, $errstr, 10);
     if (!$smtp) {
@@ -314,11 +369,12 @@ function send_order_confirmation(array $order): void
     $html .= '<tr><td colspan="2" style="padding:10px;text-align:right;"><strong>Total</strong></td><td style="padding:10px;text-align:right;"><strong>' . money($order['total']) . '</strong></td></tr>';
     $html .= '</table>';
     $html .= '<p>Estimated delivery: ' . (int)$order['estimated_minutes'] . ' minutes.</p>';
-    $html .= '<p><a href="' . env('APP_URL') . '/index.php?page=track&id=' . $order['id'] . '" style="background:#f4511e;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Track Order</a></p>';
+    $html .= '<p><a href="' . e(public_url('index.php?page=track&id=' . $order['id'])) . '" style="background:#f4511e;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Track Order</a></p>';
     $html .= '<hr><small>If you didn\'t place this order, please contact us.</small></div>';
 
-    if (!mail_send($order['customer_email'] ?? '', $subject, $html)) {
-        mail_queue($order['customer_email'] ?? '', $subject, $html);
+    $email = (string) ($order['customer_email'] ?? '');
+    if ($email !== '' && !mail_send($email, $subject, $html)) {
+        mail_queue($email, $subject, $html);
     }
 }
 
@@ -339,10 +395,10 @@ function send_order_status_update(array $order, string $oldStatus, string $newSt
     $html .= '<p>Hi ' . e($order['customer_name']) . ',</p>';
     $html .= '<p>Your order <strong>' . e($order['order_number']) . '</strong> status has changed:</p>';
     $html .= '<p style="font-size:18px;font-weight:bold;color:#f4511e;">' . ($labels[$newStatus] ?? $newStatus) . '</p>';
-    $html .= '<p><a href="' . env('APP_URL') . '/index.php?page=track&id=' . $order['id'] . '" style="background:#f4511e;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Track Order</a></p>';
+    $html .= '<p><a href="' . e(public_url('index.php?page=track&id=' . $order['id'])) . '" style="background:#f4511e;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Track Order</a></p>';
     $html .= '<hr><small>' . APP_NAME . ' - Flavours delivered fast</small></div>';
 
-    $email = query('SELECT email FROM users WHERE id=?', [$order['user_id']])->fetchColumn() ?? $order['customer_email'] ?? '';
+    $email = ($order['user_id'] ? query('SELECT email FROM users WHERE id=?', [$order['user_id']])->fetchColumn() : false) ?: ($order['customer_email'] ?? '');
     if ($email && !mail_send($email, $subject, $html)) {
         mail_queue($email, $subject, $html);
     }
@@ -351,7 +407,7 @@ function send_order_status_update(array $order, string $oldStatus, string $newSt
 function send_password_reset(string $email, string $token): void
 {
     $subject = 'Password Reset - ' . APP_NAME;
-    $resetUrl = env('APP_URL') . '/index.php?page=reset-password&token=' . $token;
+    $resetUrl = e(public_url('index.php?page=reset-password&token=' . $token));
     $html = '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">';
     $html .= '<h2 style="color:#f4511e;">Reset Your Password</h2>';
     $html .= '<p>You requested a password reset. Click the button below to set a new password:</p>';
@@ -371,7 +427,7 @@ function send_welcome_email(string $email, string $name): void
     $html .= '<h2 style="color:#f4511e;">Welcome to ' . APP_NAME . '!</h2>';
     $html .= '<p>Hi ' . e($name) . ',</p>';
     $html .= '<p>Thanks for joining us. Use code <strong>WELCOME100</strong> for ₹100 off your first order (min ₹299).</p>';
-    $html .= '<p><a href="' . env('APP_URL') . '/index.php?page=menu" style="background:#f4511e;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Explore Menu</a></p>';
+    $html .= '<p><a href="' . e(public_url('index.php?page=menu')) . '" style="background:#f4511e;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Explore Menu</a></p>';
     $html .= '<hr><small>' . APP_NAME . ' - Flavours delivered fast</small></div>';
 
     if (!mail_send($email, $subject, $html)) {
