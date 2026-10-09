@@ -9,8 +9,32 @@ $categoryId = (int) ($_GET['category'] ?? 0);
 
 if ($page === 'customer-dashboard' || $page === 'dashboard') { redirect('index.php?page=account'); }
 
+if (isset($_GET['table'])) {
+    $scannedTable = strtoupper(trim((string) $_GET['table']));
+    $tableRow = query('SELECT rt.table_number, rt.branch_id, rt.status FROM restaurant_tables rt LEFT JOIN branches b ON b.id=rt.branch_id WHERE rt.table_number=? AND (b.id IS NULL OR b.status=1)', [$scannedTable])->fetch();
+    if (!$tableRow || $tableRow['status'] === 'maintenance') {
+        unset($_SESSION['dine_in_table']);
+        flash('error', 'This table QR code is not active. Please ask a member of staff for help.');
+        redirect('index.php?page=menu');
+    }
+    if (logged_in() && !has_role('customer')) {
+        flash('error', 'Sign out of the staff account to order from a table.');
+        redirect('dashboard.php');
+    }
+    $_SESSION['dine_in_table'] = ['number' => $tableRow['table_number'], 'branch_id' => $tableRow['branch_id'] ? (int) $tableRow['branch_id'] : null];
+    flash('success', 'Welcome! You are ordering for table ' . $tableRow['table_number'] . '. Your order goes straight to the kitchen.');
+    redirect('index.php?page=menu');
+}
+if ($page === 'leave-table') {
+    unset($_SESSION['dine_in_table']);
+    flash('success', 'You left table ordering.');
+    redirect('index.php');
+}
+
 $customerOnlyPages = ['account', 'checkout', 'orders', 'favorites', 'order-success', 'track'];
-if (in_array($page, $customerOnlyPages, true)) {
+$guestTablePages = ['checkout', 'order-success', 'track'];
+$guestTableAccess = !logged_in() && (dine_in_table() || !empty($_SESSION['guest_orders'])) && in_array($page, $guestTablePages, true);
+if (in_array($page, $customerOnlyPages, true) && !$guestTableAccess) {
     if (!logged_in()) {
         require_login();
     }
@@ -82,6 +106,9 @@ function storefront_header(string $title = ''): void
             </div>
         </div>
     </nav>
+    <?php if (dine_in_table()): ?>
+        <div class="dine-in-banner"><i class="bi bi-qr-code-scan"></i><span>Dine-in · <b>Table <?= e(dine_in_table()['number']) ?></b> · we'll bring your order to your table</span><a href="<?= e(base_url('index.php?page=leave-table')) ?>">Leave table</a></div>
+    <?php endif ?>
     <?php foreach (flashes() as $message): ?>
         <div class="toast-flash alert alert-<?= $message['type'] === 'error' ? 'danger' : 'success' ?> shadow"><i class="bi bi-<?= $message['type'] === 'error' ? 'exclamation-circle' : 'check-circle' ?>"></i> <?= e($message['message']) ?><button class="btn-close" data-bs-dismiss="alert"></button></div>
     <?php endforeach ?>
@@ -308,7 +335,7 @@ if ($page === 'home'):
 <section class="page-hero compact"><div class="container"><span class="kicker">ALMOST THERE</span><h1>Your delicious cart</h1><p>Review your favourites before checkout.</p></div></section>
 <section class="cart-section"><div class="container">
 <?php if (!cart()): ?><div class="empty-state"><span><i class="bi bi-bag-x"></i></span><h2>Your cart is hungry</h2><p>Add something delicious and come back here.</p><a class="btn-primary-custom" href="index.php?page=menu">Explore the menu <i class="bi bi-arrow-right"></i></a></div>
-<?php else: ?><div class="cart-grid" data-cart data-tax-rate="<?=e(setting('tax_rate','5'))?>" data-delivery-fee="<?=e(setting('delivery_fee','49'))?>" data-free-delivery="<?=e(setting('free_delivery_threshold','499'))?>" data-discount="<?=e($totals['discount'])?>"><div class="cart-items"><div class="cart-title"><h2>Your items <span data-cart-count><?= cart_count() ?></span></h2><a href="index.php?page=menu"><i class="bi bi-plus"></i> Add more</a></div><form id="cartForm" method="post" action="actions.php"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="update_cart">
+<?php else: ?><div class="cart-grid" data-cart data-tax-rate="<?=e(setting('tax_rate','5'))?>" data-delivery-fee="<?=dine_in_table()?'0':e(setting('delivery_fee','49'))?>" data-free-delivery="<?=e(setting('free_delivery_threshold','499'))?>" data-discount="<?=e($totals['discount'])?>"><div class="cart-items"><div class="cart-title"><h2>Your items <span data-cart-count><?= cart_count() ?></span></h2><a href="index.php?page=menu"><i class="bi bi-plus"></i> Add more</a></div><form id="cartForm" method="post" action="actions.php"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="update_cart">
 <?php foreach (cart() as $item): ?><article class="cart-item" data-cart-item data-unit-price="<?=e($item['price'])?>"><img src="<?= e(food_image($item['image'])) ?>"><div class="cart-item-copy"><div><h3><?= e($item['name']) ?></h3><span class="veg-dot"><i></i></span></div><input class="instruction" maxlength="255" name="instructions[<?= $item['id'] ?>]" value="<?= e($item['instructions'] ?? '') ?>" placeholder="+ Add cooking instructions"><b><?= money($item['price']) ?> each</b></div><div class="cart-item-actions"><button type="submit" class="remove-link" form="remove-<?= $item['id'] ?>" aria-label="Remove item"><i class="bi bi-trash3"></i></button><div class="quantity-picker"><button type="button" data-qty="-1">−</button><input name="quantity[<?= $item['id'] ?>]" value="<?= (int) $item['quantity'] ?>" readonly><button type="button" data-qty="1">+</button></div><strong data-line-total><?= money($item['price'] * $item['quantity']) ?></strong></div></article><?php endforeach ?>
 <button type="submit" class="btn btn-outline-dark rounded-pill px-4 mt-3">Save cart changes</button><small class="cart-save-hint">Totals update instantly; save to keep quantities for checkout.</small></form>
 <?php foreach (cart() as $item): ?><form id="remove-<?= $item['id'] ?>" method="post" action="actions.php"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="remove_cart"><input type="hidden" name="item_id" value="<?= $item['id'] ?>"></form><?php endforeach ?>
@@ -318,16 +345,20 @@ if ($page === 'home'):
 </div></section>
 
 <?php elseif ($page === 'checkout'):
-    require_login('customer');
+    $diningTable = dine_in_table();
+    if (!$diningTable) require_login('customer');
     if (!cart()) redirect('index.php?page=menu');
     $totals = cart_totals();
-    $addresses = query('SELECT * FROM addresses WHERE user_id=? ORDER BY is_default DESC', [user()['id']])->fetchAll();
+    $checkoutUser = user() ?? ['name' => '', 'phone' => '', 'email' => ''];
+    $addresses = logged_in() ? query('SELECT * FROM addresses WHERE user_id=? ORDER BY is_default DESC', [user()['id']])->fetchAll() : [];
     $defaultAddress = $addresses[0] ?? null;
 ?>
 <section class="page-hero compact"><div class="container"><span class="kicker">SECURE CHECKOUT</span><h1>Complete your order</h1></div></section>
 <section class="checkout-section"><div class="container"><form method="post" action="actions.php" class="checkout-grid"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="place_order">
-<div class="checkout-main"><div class="checkout-card"><div class="step-title"><span>1</span><div><h3>How would you like it?</h3><small>Choose delivery or pickup</small></div></div><div class="type-options"><label><input type="radio" name="order_type" value="delivery" checked><span><i class="bi bi-scooter"></i><b>Delivery</b><small>30–40 minutes</small></span></label><label><input type="radio" name="order_type" value="pickup"><span><i class="bi bi-shop"></i><b>Self pickup</b><small>Ready in 20 minutes</small></span></label></div></div>
-<div class="checkout-card"><div class="step-title"><span>2</span><div><h3>Contact & delivery details</h3><small>So we know where to find you</small></div></div><div class="row g-3"><div class="col-md-6"><label class="form-label">Full name</label><input class="form-control" name="name" value="<?= e(user()['name']) ?>" required></div><div class="col-md-6"><label class="form-label">Phone number</label><input class="form-control" name="phone" value="<?= e(user()['phone']) ?>" required></div>
+<div class="checkout-main"><?php if ($diningTable): ?><div class="checkout-card"><div class="step-title"><span>1</span><div><h3>Dine-in order</h3><small>Sent straight to the kitchen</small></div></div><div class="type-options"><label><input type="radio" name="order_type" value="dine_in" checked><span><i class="bi bi-qr-code-scan"></i><b>Table <?= e($diningTable['number']) ?></b><small>We'll serve it at your table</small></span></label></div></div><?php else: ?><div class="checkout-card"><div class="step-title"><span>1</span><div><h3>How would you like it?</h3><small>Choose delivery or pickup</small></div></div><div class="type-options"><label><input type="radio" name="order_type" value="delivery" checked><span><i class="bi bi-scooter"></i><b>Delivery</b><small>30–40 minutes</small></span></label><label><input type="radio" name="order_type" value="pickup"><span><i class="bi bi-shop"></i><b>Self pickup</b><small>Ready in 20 minutes</small></span></label></div></div><?php endif ?>
+<div class="checkout-card"><div class="step-title"><span>2</span><div><h3><?= $diningTable ? 'Your details' : 'Contact & delivery details' ?></h3><small><?= $diningTable ? 'So staff can call your name' : 'So we know where to find you' ?></small></div></div><div class="row g-3"><div class="col-md-6"><label class="form-label">Full name</label><input class="form-control" name="name" value="<?= e($checkoutUser['name']) ?>" required></div><div class="col-md-6"><label class="form-label">Phone number</label><input class="form-control" name="phone" value="<?= e($checkoutUser['phone']) ?>" required></div>
+<?php if ($diningTable && !logged_in()): ?><div class="col-12"><label class="form-label">Email <span class="text-muted">(optional, for your receipt)</span></label><input class="form-control" type="email" name="email" maxlength="160"></div><?php endif ?>
+<?php if (!$diningTable): ?>
 <div class="col-12">
 <label class="form-label">Saved addresses</label>
 <div class="address-selector">
@@ -350,8 +381,9 @@ if ($page === 'home'):
 </div>
 </div>
 <div class="col-12"><label class="form-label">Delivery address <small class="text-muted">(or enter new)</small></label><textarea class="form-control" name="address" rows="3" required maxlength="300"><?= e($defaultAddress ? $defaultAddress['address_line'] . ', ' . $defaultAddress['city'] . ' - ' . $defaultAddress['pincode'] : '') ?></textarea></div>
+<?php endif ?>
 <div class="col-12"><label class="form-label">Order note <span class="text-muted">(optional)</span></label><input class="form-control" name="notes" maxlength="500" placeholder="Less spicy, call on arrival..."></div></div></div>
-<div class="checkout-card"><div class="step-title"><span>3</span><div><h3>Payment method</h3><small>All transactions are secure</small></div></div><div class="payment-options"><label><input type="radio" name="payment_method" value="upi" checked><span><i class="bi bi-phone"></i><b>UPI</b><small>Demo instant payment (no real charge)</small></span></label><label><input type="radio" name="payment_method" value="card"><span><i class="bi bi-credit-card"></i><b>Card</b><small>Demo Visa / Mastercard (no real charge)</small></span></label><label><input type="radio" name="payment_method" value="cod"><span><i class="bi bi-cash-coin"></i><b>Cash on delivery</b><small>Pay at your doorstep</small></span></label></div><div class="demo-payment-notice"><i class="bi bi-info-circle"></i><small><strong>Demo mode:</strong> UPI and Card payments are simulated. No real money is charged. Connect Razorpay/Stripe for production.</small></div></div></div>
+<div class="checkout-card"><div class="step-title"><span>3</span><div><h3>Payment method</h3><small>All transactions are secure</small></div></div><div class="payment-options"><?php if ($diningTable): ?><label><input type="radio" name="payment_method" value="cash" checked><span><i class="bi bi-cash-coin"></i><b>Cash</b><small>Pay at the table or counter</small></span></label><?php endif ?><label><input type="radio" name="payment_method" value="upi" <?= $diningTable ? '' : 'checked' ?>><span><i class="bi bi-phone"></i><b>UPI / Mobile money</b><small>Staff confirm when received</small></span></label><label><input type="radio" name="payment_method" value="card"><span><i class="bi bi-credit-card"></i><b>Card</b><small>Staff confirm when received</small></span></label><?php if (!$diningTable): ?><label><input type="radio" name="payment_method" value="cod"><span><i class="bi bi-cash-coin"></i><b>Cash on delivery</b><small>Pay at your doorstep</small></span></label><?php endif ?></div><div class="demo-payment-notice"><i class="bi bi-info-circle"></i><small><strong>No online payment gateway is connected.</strong> Your order stays "payment pending" until a member of staff confirms the payment.</small></div></div></div>
 <aside class="bill-card order-preview" data-checkout-summary data-delivery="<?=e($totals['delivery'])?>" data-total="<?=e($totals['total'])?>"><h3>Your order</h3><?php foreach (cart() as $item): ?><div class="preview-item"><img src="<?= e(food_image($item['image'])) ?>"><div><b><?= e($item['name']) ?></b><small>Qty: <?= $item['quantity'] ?></small></div><strong><?= money($item['price'] * $item['quantity']) ?></strong></div><?php endforeach ?><div class="bill-lines"><p><span>Subtotal</span><b><?= money($totals['subtotal']) ?></b></p><?php if($totals['discount']):?><p class="text-success"><span>Coupon discount</span><b>−<?=money($totals['discount'])?></b></p><?php endif?><p><span>Delivery</span><b data-checkout-delivery><?= $totals['delivery'] ? money($totals['delivery']) : 'FREE' ?></b></p><p><span>Tax</span><b><?= money($totals['tax']) ?></b></p></div><div class="grand-total"><span><b>Total</b></span><strong data-checkout-total><?= money($totals['total']) ?></strong></div><button class="btn-primary-custom w-100 justify-content-center">Place order <i class="bi bi-arrow-right"></i></button><small class="secure-note"><i class="bi bi-shield-check"></i> By placing this order you agree to our terms.</small></aside>
 </form></div></section>
 
@@ -448,21 +480,28 @@ if ($page === 'home'):
 <?php endforeach ?></div><?php endif ?></div></section>
 
 <?php elseif ($page === 'order-success'):
-    require_login('customer');
-    $order = query('SELECT * FROM orders WHERE id=? AND user_id=?', [(int)($_GET['id']??0),user()['id']])->fetch();
-    if (!$order) redirect('index.php');
+    $order = query('SELECT * FROM orders WHERE id=?', [(int)($_GET['id']??0)])->fetch();
+    if (!$order || !can_view_order($order)) redirect('index.php');
 ?>
-<section class="success-section"><div class="success-card"><div class="success-check"><i class="bi bi-check-lg"></i><span></span><span></span></div><span class="kicker">ORDER CONFIRMED</span><h1>Yay! Food is on the way.</h1><p>We've received your order and our kitchen is getting ready to work its magic.</p><div class="success-order"><span>Order number<b>#<?= e($order['order_number']) ?></b></span><span>Estimated time<b><?= $order['estimated_minutes'] ?>–<?= $order['estimated_minutes']+10 ?> min</b></span><span><?=$order['payment_status']==='paid'?'Amount paid':'Amount due'?><b><?= money($order['total']) ?></b></span></div><div class="success-actions"><a class="btn-primary-custom" href="index.php?page=track&id=<?= $order['id'] ?>">Track my order <i class="bi bi-arrow-right"></i></a><a href="index.php?page=menu" class="btn btn-outline-dark rounded-pill px-4">Back to menu</a></div><small><i class="bi bi-bell"></i> We'll notify you whenever your order moves to the next step.</small></div></section>
+<section class="success-section"><div class="success-card"><div class="success-check"><i class="bi bi-check-lg"></i><span></span><span></span></div><span class="kicker">ORDER CONFIRMED</span><h1><?= $order['order_type'] === 'dine_in' ? 'Yay! Sit back and relax.' : 'Yay! Food is on the way.' ?></h1><p><?= $order['order_type'] === 'dine_in' ? 'Your order is in the kitchen. We\'ll bring it to table ' . e($order['table_number']) . '.' : 'We\'ve received your order and our kitchen is getting ready to work its magic.' ?></p><div class="success-order"><span>Order number<b>#<?= e($order['order_number']) ?></b></span><span>Estimated time<b><?= $order['estimated_minutes'] ?>–<?= $order['estimated_minutes']+10 ?> min</b></span><span><?=$order['payment_status']==='paid'?'Amount paid':'Amount due'?><b><?= money($order['total']) ?></b></span></div><div class="success-actions"><a class="btn-primary-custom" href="index.php?page=track&id=<?= $order['id'] ?>">Track my order <i class="bi bi-arrow-right"></i></a><a href="index.php?page=menu" class="btn btn-outline-dark rounded-pill px-4">Back to menu</a></div><small><i class="bi bi-bell"></i> We'll notify you whenever your order moves to the next step.</small></div></section>
 
 <?php elseif ($page === 'track'):
-    require_login('customer');
-    $order = query('SELECT * FROM orders WHERE id=? AND user_id=?', [(int)($_GET['id']??0),user()['id']])->fetch();
-    if (!$order) redirect('index.php?page=orders');
+    $order = query('SELECT * FROM orders WHERE id=?', [(int)($_GET['id']??0)])->fetch();
+    if (!$order || !can_view_order($order)) redirect(logged_in() ? 'index.php?page=orders' : 'index.php');
     $rider = $order['delivery_user_id'] ? query('SELECT name,phone FROM users WHERE id=?', [$order['delivery_user_id']])->fetch() : query('SELECT name,phone FROM users WHERE role="delivery" AND status="active" LIMIT 1')->fetch();
     $steps=['pending'=>['Order received','Waiting for restaurant confirmation.'],'confirmed'=>['Order confirmed','We have received your order.'],'preparing'=>['Cooking your food','Our chefs are creating something delicious.'],'ready'=>['Packed and ready','Your order is packed with care.'],'out_for_delivery'=>['Out for delivery','Our rider is heading your way.'],'delivered'=>['Delivered','Enjoy your Cafe meal!']];
+    if ($order['order_type'] === 'dine_in') {
+        unset($steps['out_for_delivery']);
+        $steps['ready'] = ['Ready to serve', 'Your food is on its way to table ' . $order['table_number'] . '.'];
+        $steps['delivered'] = ['Served', 'Enjoy your Cafe meal!'];
+    } elseif ($order['order_type'] === 'pickup') {
+        unset($steps['out_for_delivery']);
+        $steps['ready'] = ['Ready for pickup', 'Collect your order at the counter.'];
+        $steps['delivered'] = ['Collected', 'Enjoy your Cafe meal!'];
+    }
     $position=array_search($order['status'],array_keys($steps),true); if ($position===false) $position=-1;
 ?>
-<section class="tracking-section"><div class="container"><div class="track-header"><div><span class="kicker">LIVE ORDER TRACKING</span><h1>Your feast is in motion</h1><p>Order #<?= e($order['order_number']) ?></p></div><div class="eta"><small>Estimated arrival</small><b><?= date('h:i A',strtotime($order['created_at'].' +'.$order['estimated_minutes'].' minutes')) ?></b><span><?= $order['estimated_minutes'] ?>–<?= $order['estimated_minutes']+10 ?> min</span></div></div><div class="tracking-grid"><div class="track-map"><div class="fake-map"><i class="road r1"></i><i class="road r2"></i><i class="road r3"></i><span class="restaurant-pin"><i class="bi bi-shop"></i></span><span class="home-pin"><i class="bi bi-house-heart"></i></span><div class="rider"><i class="bi bi-scooter"></i></div></div><div class="rider-card"><span><?=e(strtoupper(substr($rider['name']??'Rider',0,2)))?></span><div><b><?=e($rider['name']??'Delivery partner')?></b><small>Your delivery partner · <i class="bi bi-star-fill"></i> 4.9</small></div><a href="tel:<?=e($rider['phone']??setting('restaurant_phone'))?>" title="Call rider"><i class="bi bi-telephone"></i></a><a href="https://wa.me/<?=e(preg_replace('/\D+/','',$rider['phone']??setting('restaurant_phone')))?>" target="_blank" rel="noopener" title="Message rider"><i class="bi bi-chat-dots"></i></a></div></div><div class="track-timeline"><h3>Order status</h3><?php foreach ($steps as $key=>$step): $i=array_search($key,array_keys($steps),true); ?><div class="timeline-step <?= $i <= $position ? 'done' : '' ?> <?= $i === $position ? 'current' : '' ?>"><span><i class="bi <?= $i <= $position ? 'bi-check-lg' : 'bi-circle' ?>"></i></span><div><b><?= $step[0] ?></b><small><?= $step[1] ?></small><?php if ($i===$position): ?><em>Happening now</em><?php endif ?></div></div><?php endforeach ?><div class="help-box"><i class="bi bi-headset"></i><div><b>Need help with your order?</b><small>Our support team is here for you.</small></div><a href="tel:<?= e(setting('restaurant_phone')) ?>">Call us</a></div></div></div></div></section>
+<section class="tracking-section"><div class="container"><div class="track-header"><div><span class="kicker">LIVE ORDER TRACKING</span><h1>Your feast is in motion</h1><p>Order #<?= e($order['order_number']) ?></p></div><div class="eta"><small>Estimated arrival</small><b><?= date('h:i A',strtotime($order['created_at'].' +'.$order['estimated_minutes'].' minutes')) ?></b><span><?= $order['estimated_minutes'] ?>–<?= $order['estimated_minutes']+10 ?> min</span></div></div><div class="tracking-grid"><div class="track-map"><div class="fake-map"><i class="road r1"></i><i class="road r2"></i><i class="road r3"></i><span class="restaurant-pin"><i class="bi bi-shop"></i></span><span class="home-pin"><i class="bi bi-house-heart"></i></span><div class="rider"><i class="bi bi-scooter"></i></div></div><?php if ($order['order_type'] === 'delivery'): ?><div class="rider-card"><span><?=e(strtoupper(substr($rider['name']??'Rider',0,2)))?></span><div><b><?=e($rider['name']??'Delivery partner')?></b><small>Your delivery partner · <i class="bi bi-star-fill"></i> 4.9</small></div><a href="tel:<?=e($rider['phone']??setting('restaurant_phone'))?>" title="Call rider"><i class="bi bi-telephone"></i></a><a href="https://wa.me/<?=e(preg_replace('/\D+/','',$rider['phone']??setting('restaurant_phone')))?>" target="_blank" rel="noopener" title="Message rider"><i class="bi bi-chat-dots"></i></a></div><?php endif ?></div><div class="track-timeline"><h3>Order status</h3><?php foreach ($steps as $key=>$step): $i=array_search($key,array_keys($steps),true); ?><div class="timeline-step <?= $i <= $position ? 'done' : '' ?> <?= $i === $position ? 'current' : '' ?>"><span><i class="bi <?= $i <= $position ? 'bi-check-lg' : 'bi-circle' ?>"></i></span><div><b><?= $step[0] ?></b><small><?= $step[1] ?></small><?php if ($i===$position): ?><em>Happening now</em><?php endif ?></div></div><?php endforeach ?><div class="help-box"><i class="bi bi-headset"></i><div><b>Need help with your order?</b><small>Our support team is here for you.</small></div><a href="tel:<?= e(setting('restaurant_phone')) ?>">Call us</a></div></div></div></div></section>
 
 <?php elseif ($page === 'about'):
 $aboutCategories = query('SELECT * FROM categories WHERE status=1 ORDER BY sort_order LIMIT 6')->fetchAll();

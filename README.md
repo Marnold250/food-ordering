@@ -45,23 +45,23 @@ You do **not** need to install PHP, MySQL, Node.js or Composer separately. XAMPP
 1. If the project was downloaded as a ZIP file, right-click it and select **Extract All**.
 2. Rename the extracted project folder to:
 
-   `food-ordering-website`
+   `food-ordering`
 
 3. Open File Explorer.
 4. Go to:
 
    `C:\xampp\htdocs`
 
-5. Copy the complete `food-ordering-website` folder into the `htdocs` folder.
+5. Copy the complete `food-ordering` folder into the `htdocs` folder.
 6. The final location must look exactly like this:
 
-   `C:\xampp\htdocs\food-ordering-website`
+   `C:\xampp\htdocs\food-ordering`
 
 7. Open that folder and confirm that files such as `index.php`, `config.php` and `database` are visible.
 
 Do not accidentally create an extra folder level such as:
 
-`C:\xampp\htdocs\food-ordering-website\food-ordering-website`
+`C:\xampp\htdocs\food-ordering\food-ordering`
 
 ## Step 4: Start Apache and MySQL
 
@@ -83,7 +83,7 @@ Do not accidentally create an extra folder level such as:
 5. Click **Choose File**.
 6. Select this file from the project:
 
-   `C:\xampp\htdocs\food-ordering-website\database\food_ordering.sql`
+   `C:\xampp\htdocs\food-ordering\database\food_ordering.sql`
 
 7. Scroll to the bottom of the phpMyAdmin page.
 8. Click **Import** or **Go**.
@@ -96,7 +96,7 @@ Important: importing this SQL file again resets the demo database and removes ch
 
 Open this address in your browser:
 
-http://localhost/food-ordering-website/
+http://localhost/food-ordering/
 
 The Cafe customer homepage should now appear.
 
@@ -169,7 +169,7 @@ Every other time:
 1. Open the XAMPP Control Panel.
 2. Start Apache.
 3. Start MySQL.
-4. Open http://localhost/food-ordering-website/ in your browser.
+4. Open http://localhost/food-ordering/ in your browser.
 
 ## How to stop the project
 
@@ -193,7 +193,7 @@ Always stop MySQL properly before shutting down the computer to reduce the risk 
 
 1. Confirm that Apache is green in XAMPP.
 2. Confirm that the project is inside `C:\xampp\htdocs`.
-3. Confirm that the folder is named exactly `food-ordering-website`.
+3. Confirm that the folder is named exactly `food-ordering`.
 4. Try opening http://localhost/ in the browser.
 
 ## Apache does not start
@@ -223,7 +223,7 @@ You can change Apache to port 8080:
 5. Save the file and restart Apache.
 6. Open:
 
-   http://localhost:8080/food-ordering-website/
+   http://localhost:8080/food-ordering/
 
 ## Food images are not showing
 
@@ -252,21 +252,58 @@ Press `Ctrl + F5` to perform a hard refresh and clear the browser’s cached CSS
 
 # Database configuration
 
-The project is already configured for a normal XAMPP installation:
+Database settings are read from a `.env` file in the project folder. The `.env` file is **not** stored in git, so create it once:
 
-- Host: `127.0.0.1`
-- Database: `food_ordering`
-- Username: `root`
-- Password: empty
+1. Copy `.env.example` and rename the copy to `.env`.
+2. Open `.env` and set your MySQL details:
 
-These values are stored in `config.php`.
+```
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=food_ordering
+DB_USER=root
+DB_PASS=your-mysql-password
+```
 
-If your MySQL username, password or port is different, update `config.php` before opening the website.
+A default XAMPP installation uses user `root` with an empty password (`DB_PASS=`).
+
+Never commit `.env`. It is listed in `.gitignore`.
+
+# Dine-in QR ordering
+
+Every restaurant table gets its own QR code. A guest scans it, the menu opens for that table, and the order is sent to the kitchen with the table number printed on the ticket.
+
+1. Find your computer's Wi-Fi IP address (Windows: run `ipconfig`, look for "IPv4 Address", e.g. `192.168.1.20`).
+2. In `.env` set `APP_URL=http://192.168.1.20/food-ordering` so the QR codes point to an address phones on the same Wi-Fi can open. Keep `SESSION_SECURE=false` unless the site runs on HTTPS.
+3. Sign in as admin and open **Tables**. Add your tables, then click **Print all QR codes** (or **QR code** on one table) and print the page.
+4. A guest scans the code. It opens `index.php?table=T1`, shows a "Dine-in · Table T1" banner, and the guest can order without creating an account.
+5. The order shows as "Dine-in · Table T1" in the kitchen queue and on the printed kitchen ticket. The table is marked occupied until the order is served or cancelled.
+6. When the food is served, kitchen marks the order "ready" and staff/admin mark it "delivered" (served).
+
+# Emails
+
+Order confirmation, order status, password reset and contact emails use the SMTP settings (`MAIL_*`) in `.env`. If an email cannot be sent it is saved in the `email_queue` table. To retry those emails, run:
+
+```
+C:\xampp\php\php.exe C:\xampp\htdocs\food-ordering\backend\send_queued_emails.php
+```
+
+You can schedule that command every 5 minutes with Windows Task Scheduler.
+
+# Smoke test
+
+With Apache and MySQL running and the demo data imported, run:
+
+```
+C:\xampp\php\php.exe C:\xampp\htdocs\food-ordering\tests\smoke_test.php http://localhost/food-ordering
+```
+
+It scans table T1, places a dine-in order as a guest and checks that the kitchen ticket shows the table number.
 
 # Important notes
 
-- Card and UPI payments are demonstration payments. They do not charge real money.
-- Connect a real provider such as Razorpay before accepting online payments.
+- No online payment gateway is connected. Card and UPI orders stay "payment pending" until staff click **Mark paid** in the orders list. Cash orders are marked paid when the order is delivered/served.
+- Connect a real provider such as Razorpay or Stripe before accepting online payments.
 - Change every demo password before publishing the project on a public server.
 - Do not use the default `root` database account on a production server.
 - Online food and avatar images require an internet connection.
